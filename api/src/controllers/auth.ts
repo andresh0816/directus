@@ -1,5 +1,5 @@
 import { useEnv } from '@directus/env';
-import { ErrorCode, InvalidPayloadError, isDirectusError } from '@directus/errors';
+import { ErrorCode, InvalidCredentialsError, InvalidPayloadError, isDirectusError } from '@directus/errors';
 import type { Accountability } from '@directus/types';
 import type { Request } from 'express';
 import { Router } from 'express';
@@ -23,6 +23,8 @@ import { getIPFromReq } from '../utils/get-ip-from-req.js';
 import { getSecret } from '../utils/get-secret.js';
 import isDirectusJWT from '../utils/is-directus-jwt.js';
 import { verifyAccessJWT } from '../utils/jwt.js';
+import { toArray } from '@directus/utils';
+import jwt from 'jsonwebtoken';
 
 const router = Router();
 const env = useEnv();
@@ -264,5 +266,127 @@ router.get(
 	}),
 	respond,
 );
+
+router.get(
+	'/oauth2/authorize',
+	asyncHandler(async (req, res) => {
+		const { client_id, response_type, redirect_uri, state } = req.query;
+		const allowedClientList = toArray(env['OAUTH2_ALLOWED_CLIENTS'] as string);
+
+		if (!client_id || !response_type || !redirect_uri || !state) {
+			throw new InvalidPayloadError({ reason: "Invalid OAuth2 request" });
+		}
+
+		if (!allowedClientList.includes(client_id as string)) {
+			res.send("Invalid client_id");
+			return;
+		}
+
+		const encodedUri = encodeURIComponent(redirect_uri as string);
+		const payload = `/admin/login?oauth=true&client_id=${client_id}&response_type=${response_type}&redirect_uri=${encodedUri}&state=${state}`;
+		res.redirect(payload);
+	}),
+	respond
+)
+
+router.post(
+	'/oauth2/authorize',
+	asyncHandler(async (req, res, next) => {
+		const { email, password, client_id, redirect_uri, state, response_type, access_token } = req.body
+		const accountability: Accountability = createDefaultAccountability({ ip: getIPFromReq(req) })
+		const authenticationService = new AuthenticationService({ accountability: accountability, schema: req.schema })
+		const decodedUri = decodeURIComponent(redirect_uri)
+
+		if(!client_id || !redirect_uri || !state || !response_type) {
+			throw new InvalidPayloadError({ reason: "Error on the OAuth2 payload from authorization client" })
+		}
+
+		if(access_token) {
+
+			if(!access_token) {
+				throw new InvalidPayloadError({ reason: "No access token provided" })
+			}
+
+			const payload = {
+				access_token: access_token
+			}
+
+			const code = jwt.sign(payload, env['SECRET'] as string, { issuer: 'Directus OAuth2' })
+			res.redirect(decodedUri + `?code=${code}&state=${state}`)
+			return;
+		}
+
+		if(!email || !password) {
+			throw new InvalidPayloadError({ reason: "Email and Password is required" })
+		}
+
+		const auth = await authenticationService.login("local", { email, password }, { session: false })
+
+		if (!auth) {
+			throw new InvalidCredentialsError()
+		}
+
+		const payload = {
+			email: email,
+			...auth
+		}
+
+		const code = jwt.sign(payload, env['SECRET'] as string, { issuer: 'Directus OAuth2' })
+
+		res.redirect(decodedUri + `?code=${code}&state=${state}`)
+
+		return next()
+	}),
+	respond
+)
+
+router.post(
+	'oauth2/token',
+	asyncHandler(async (req, res, next) => {
+		const { grant_type, code, client_id, redirect_uri } = req.body;
+		const allowedClientList = toArray(env['OAUTH2_ALLOWED_CLIENTS'] as string)
+
+		if (!client_id || !redirect_uri || !code) {
+			throw new InvalidPayloadError({ reason: "Invalid OAuth2 request"});
+		}
+
+		if (!allowedClientList.includes(client_id)) {
+			res.send("Invalid client_id")
+			throw new InvalidCredentialsError()
+		}
+
+		if (grant_type !== 'authorization_code') {
+			return res.status(400).json({ error: 'Unsupported grant type' });
+		}
+
+		let decodedMessage;
+
+		try {
+			decodedMessage = JSON.parse(jwt.verify(code, env['SECRET'] as string) as string);
+		} catch (error) {
+			throw new InvalidPayloadError({ reason: "Invalid oauth2 code" });
+		}
+
+		res.status(200).send({ acess_token: decodedMessage.access_token })
+
+		return next()
+	}),
+	respond
+)
+
+router.get(
+	'/token',
+	asyncHandler(async (req, res) => {
+		const cookie = req.cookies[env['SESSION_COOKIE_NAME'] as string]
+
+		if (!cookie) {
+			res.status(401).send({ error: "No authenticated"})
+		}
+
+		res.status(200).send({ access_token: cookie })
+	}),
+	respond
+)
+
 
 export default router;

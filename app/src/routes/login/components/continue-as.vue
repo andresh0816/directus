@@ -6,23 +6,41 @@ import { unexpectedError } from '@/utils/unexpected-error';
 import { userName } from '@/utils/user-name';
 import { onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
 const { t } = useI18n();
 
 const router = useRouter();
+const route = useRoute()
 
 const loading = ref(false);
 const name = ref<string | null>(null);
 const lastPage = ref<string | null>(null);
+const token = ref<string | null>(null)
+const props = defineProps<{ oauthParams: any }>()
+
+const oauth: boolean = Boolean(route.query.oauth)
 
 fetchUser();
+getToken();
 
 onMounted(() => {
 	if ('continue' in router.currentRoute.value.query) {
 		hydrateAndLogin();
 	}
 });
+
+async function getToken() {
+	try {
+		const response = await api.get('/auth/token')
+
+		if (response.data.access_token) {
+			token.value = response.data.access_token
+		}
+	} catch (e) {
+		unexpectedError(e)
+	}
+}
 
 async function fetchUser() {
 	loading.value = true;
@@ -52,6 +70,38 @@ async function hydrateAndLogin() {
 	const redirectQuery = router.currentRoute.value.query.redirect as string;
 	router.push(redirectQuery || lastPage.value || `/content`);
 }
+
+async function oauth2Process() {
+	try {
+		// Datos a enviar al servicio externo
+		const oauthData = {
+			...props.oauthParams,
+			access_token: token.value
+		}
+
+		// Realizar la solicitud POST al servicio externo
+		const response = await api.post('/auth/oauth2/authorize', {
+			oauthData
+		})
+
+		// Verificar la respuesta del servidor
+		if (response.status === 200) {
+
+			const responseData = await response.data;
+
+			if (responseData.redirect_uri) {
+				window.location.href = responseData.redirect_uri;
+			}
+		} else {
+			const errorData = await response.data;
+			console.error('Error en la autenticación OAuth:', errorData);
+		}
+	} catch (error) {
+		// Manejo de cualquier otro error
+		unexpectedError(error);
+	}
+}
+
 </script>
 
 <template>
@@ -65,7 +115,7 @@ async function hydrateAndLogin() {
 			</i18n-t>
 			<div class="actions">
 				<router-link to="/logout" class="sign-out">{{ t('sign_out') }}</router-link>
-				<v-button autofocus large @click="hydrateAndLogin">{{ t('continue_label') }}</v-button>
+				<v-button autofocus large @click="oauth2Process">{{ t('continue_label') }}</v-button>
 			</div>
 		</template>
 	</div>

@@ -9,6 +9,7 @@ import { useI18n } from 'vue-i18n';
 import ContinueAs from './components/continue-as.vue';
 import { LdapForm, LoginForm } from './components/login-form/';
 import SsoLinks from './components/sso-links.vue';
+import { useRoute } from 'vue-router';
 
 withDefaults(
 	defineProps<{
@@ -24,9 +25,19 @@ const { t, te } = useI18n();
 const appStore = useAppStore();
 const serverStore = useServerStore();
 const { auth, providerOptions } = storeToRefs(serverStore);
+const route = useRoute()
+
+const oauthParams = {
+	client_id: route.query.client_id,
+	redirect_uri: route.query.redirect_uri,
+	state: route.query.state,
+	response_type: route.query.response_type
+}
 
 const driver = ref(unref(auth).disableDefault ? unref(providerOptions)?.[0]?.driver : DEFAULT_AUTH_DRIVER);
 const provider = ref(unref(auth).disableDefault ? unref(providerOptions)?.[0]?.value : DEFAULT_AUTH_PROVIDER);
+
+
 
 const providerSelect = computed({
 	get() {
@@ -54,7 +65,7 @@ useHead({
 			</div>
 		</div>
 
-		<continue-as v-if="authenticated" />
+		<continue-as v-if="authenticated" :oauth-params="oauthParams" />
 
 		<ldap-form v-else-if="driver === 'ldap'" :provider="provider" />
 
